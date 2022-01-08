@@ -13,16 +13,18 @@
 #define ON 1
 #define OFF 0
 
+//Type Defined Struct To Hold The Actual Temprature and Setpoint
 	typedef struct Message{
 char Txt1[4]; 
 char Txt2[4];
 }AMessage;
 
-
+//initialize Queues to Send Message between Tasks
 QueueHandle_t xUARTQueue;
 QueueHandle_t xLCDQueue;
 QueueHandle_t xBuzzerQueue;
 
+//Binary Semaphore to Wake Up the Adc_read_task
 SemaphoreHandle_t xSemaphore;
 
 const TickType_t xDelayinf = portMAX_DELAY;
@@ -41,14 +43,21 @@ unsigned const char AlarmValue = 27;
 	unsigned char setpoint=30;
 	on=ON;
 	off=OFF;
+	
 	while(1){
+		
+		//Wait For Binary Semaphore from ISR 
 		xSemaphoreTake( xSemaphore, portMAX_DELAY );
+		
+		//Take the SETPOINT From user First Time
 		if(User==1)
 		{
 		xQueueReceive(xUARTQueue,	&setpoint, portMAX_DELAY);		// Receive data
 			User= 0;
 		}
-		Temp=LM35_Value();
+		
+		Temp=LM35_Value(); 							//Read Actual Temprature
+		
 		
 		if(Temp < setpoint){									//If cold		
 			GPIO_PORTF_DATA_R |= 0x02;							//Heater LED ON
@@ -58,10 +67,14 @@ unsigned const char AlarmValue = 27;
 			GPIO_PORTF_DATA_R &=~ 0x02;									//Heater Led OFF
 		}
 		
-		toString(Temp,msg.Txt1);
+		
+		toString(Temp,msg.Txt1);							//Actual value
 		toString(setpoint, msg.Txt2);							//setpoint 
+		
+		//Send in QUEUES For UART & LCD
 		xQueueSendToBack(xUARTQueue,&msg,0);
-		xQueueSendToBack(xLCDQueue,&msg,0); 
+		xQueueSendToBack(xLCDQueue,&msg,0);
+		
 			if(Temp > AlarmValue){ 								//Alarm?
 					xQueueSend(xBuzzerQueue, &on, 0); 				//buzzer ON
 			}
@@ -78,6 +91,7 @@ void UART_TASK(void){
 	unsigned AdcValue;
 	unsigned char Total; 
   while(1){
+	  	//Take User Input First Time
 		if (User==1)
 					{print("\n\r\nEnter Temperature Setpoint (Degrees): ");
 						N=0;
@@ -90,10 +104,14 @@ void UART_TASK(void){
 							N=N-'0';
 							Total=10*Total+N;				
 						}
+					 
+					//Send to the ADC read Task
 					xQueueSend(xUARTQueue,&Total,pdMS_TO_TICKS(10));
 					print("\n\rTemperature Setpoint changed...");	
 					}
-	else{
+	  
+	  //Display the Actual and Setpoint in Terminal
+	  else{
 		
 				AMessage msg;
 				xQueueReceive(xUARTQueue,&msg,xDelayinf);
@@ -108,15 +126,13 @@ void UART_TASK(void){
 
 
 
- 
+ //ADC Interrupt Handler to Give Binary Semaphore for ADC_READ_TASK every 1 sec
 void ADC0SS3_Handler(void){
 	BaseType_t xHigherPriorityTaskWoken= pdFALSE;
 	xSemaphoreGiveFromISR(xSemaphore, &xHigherPriorityTaskWoken );
 	ADC0_ISC_R = 8;          /* clear coversion clear flag bit*/
 	portEND_SWITCHING_ISR(xHigherPriorityTaskWoken);
-	
-	//xSemaphoreGive(xSemaphore);
-	//if(xHigherPriorityTaskWoken){taskYIELD();}
+
 }
 
 
@@ -124,6 +140,7 @@ void ADC0SS3_Handler(void){
 void LCD_TASK(void){
 	AMessage msg;
     while(1){	
+	    		//receive msg from queue and display 
 			xQueueReceive(xLCDQueue,&msg,xDelayinf);
 			LCD_line(1); 
 			LCD_display("Measure: ");   
@@ -140,6 +157,7 @@ void Buzzer(void *pvParameters){
 unsigned char Buzzerstate;
 	Buzzerstate=0;
     while(1){
+	    		//receive Buzzer State from Queue 
 			xQueueReceive(xBuzzerQueue,&Buzzerstate,0);
 			if(Buzzerstate==1){
 				GPIO_PORTF_DATA_R&=~0x02;
@@ -156,21 +174,29 @@ unsigned char Buzzerstate;
 
 
 int main(void)
-{
+{	
+	//Initialization Functions
 	LEDS_Init();
 	UART_Init();
 	LM35_Init();	
 	LCD_start();
 	LCD_clear();
+	
+	//Create Queues 
 	xUARTQueue = xQueueCreate( 10,sizeof(AMessage) );
 	xLCDQueue= xQueueCreate(10,sizeof(AMessage) );
 	xBuzzerQueue= xQueueCreate(10,sizeof(int) );
 	
+	//Create Binary Semaphore
 	vSemaphoreCreateBinary(xSemaphore);
+	
+	//Create FreeRTOS Tasks
 	xTaskCreate(ADC_Read_Task,"ADC_Read_Task",100,NULL,3,0);
 	xTaskCreate(LCD_TASK,"LCD_TASK",100,NULL,2,0);
 	xTaskCreate(Buzzer,"Buzzer_TASK",100,NULL,2,0);
-		xTaskCreate(UART_TASK,"UART_TASK",100,NULL,2,0);
+	xTaskCreate(UART_TASK,"UART_TASK",100,NULL,2,0);
+	
+	//Start Scheduler
 	vTaskStartScheduler();
 
 }
